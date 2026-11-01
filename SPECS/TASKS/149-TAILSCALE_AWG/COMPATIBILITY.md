@@ -58,9 +58,11 @@ reference evidence. Independent wireguard codec остаётся прежним.
 
 ## Codec / protocol
 
-Один transport/awgprofile владеет validation/render/configure для standalone
-AWG и embedded Tailscale; старые helpers/testdata перемещены без смены wire
-семантики. Profile fingerprint = version + canonical IPC; label и WG identity
+Существующий transport/wireguard владеет codec/decoy helpers для standalone
+AWG и embedded Tailscale. Helpers/tests/testdata сохранены на исходных путях
+byte-identical baseline; protocol/tailscale импортирует WireGuard напрямую
+через CompileTailscaleAWGProfile/TailscaleAWGProfile.Apply. Public raw IPC API
+не добавляется, отдельный transport/awgprofile не используется. Profile fingerprint = version + canonical IPC; label и WG identity
 в него не входят. Header key в public lab генерируется только из явно
 синтетической константы. Numeric singleton H values нормализуются JSON codec в
 числа; строка N и число N эквивалентны, диапазон остаётся строкой.
@@ -78,3 +80,9 @@ Android длительная DERP stability, mobile handoff, Windows/macOS nativ
 route/DNS/handoff, iOS Packet Tunnel и publication immutable dependency pin
 остаются отдельными gates. Успешные малые запросы, control handshake и source
 regression не закрывают их. Личные topology/device/deployment logs исключены.
+
+## Проверка следующей upstream линии
+
+[PORTING_1_15.md](PORTING_1_15.md) фиксирует read-only аудит testing и dependency
+pins. Прямой импорт не означает готового переноса на новый sing-tun.Go stack.
+Текущая1.14 продолжает требовать with_gvisor для embedded Tailscale.

@@ -13,7 +13,7 @@
 // plausible first flight, not a byte-exact browser fingerprint. Browser
 // fingerprints (Ib = chrome/chrome-full/firefox) come from uTLS in
 // quic_clienthello_utls_awg.go; "" / curl use this generic builder.
-package awgprofile
+package wireguard
 
 import (
 	"encoding/binary"

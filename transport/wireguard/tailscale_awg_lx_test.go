@@ -1,6 +1,6 @@
 //go:build with_awg
 
-package awgprofile
+package wireguard
 
 import (
 	"strings"
@@ -11,13 +11,13 @@ import (
 
 func TestTailscaleAWGProfileValidationLX(t *testing.T) {
 	valid := option.TailscaleAWGOptions{Version: 2, ProfileID: "lab", Parameters: option.AmneziaWGOptions{S1: 64, S2: 64, S3: 32, S4: 16, H1: "100000-199999", H2: "200000-299999", H3: "300000-399999", H4: "400000-499999"}}
-	p, err := CompileTailscale(valid)
+	p, err := CompileTailscaleAWGProfile(valid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	renamed := valid
 	renamed.ProfileID = "renamed"
-	other, err := CompileTailscale(renamed)
+	other, err := CompileTailscaleAWGProfile(renamed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestTailscaleAWGProfileValidationLX(t *testing.T) {
 				o.Version = 3
 				o.Parameters.HeaderProtectionKey = "private-invalid-secret"
 			}
-			_, err := CompileTailscale(o)
+			_, err := CompileTailscaleAWGProfile(o)
 			if err == nil {
 				t.Fatal("invalid profile accepted")
 			}

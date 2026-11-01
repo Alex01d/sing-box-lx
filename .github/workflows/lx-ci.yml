@@ -73,7 +73,7 @@ jobs:
           go vet \
             -tags "${BASE_TAGS},with_xhttp,with_awg,with_lx_command,with_lxd" \
             ./option/ ./constant/ ./transport/v2ray/ ./transport/v2rayxhttp/ \
-            ./protocol/wireguard/ ./transport/wireguard/ ./transport/awgprofile/ ./lxd/
+            ./protocol/wireguard/ ./transport/wireguard/ ./lxd/
           # trusttunnel (SPEC 133/134): upstream-form files, so no _lx suffix —
           # the packages are listed here and in the gofmt filter explicitly.
           go vet \
@@ -177,7 +177,7 @@ jobs:
           go test -race -count=1 \
             -ldflags "-checklinkname=0" \
             -tags "${BASE_TAGS},with_awg,with_lx_idle_suspend" \
-            ./transport/wireguard/ ./transport/awgprofile/ ./protocol/wireguard/ ./route/ \
+            ./transport/wireguard/ ./protocol/wireguard/ ./route/ \
             ./adapter/endpoint/ ./common/lxclosewatch/ ./experimental/cachefile/ \
             ./service/oomkiller/ ./common/lxmemory/
           go test -count=1 \

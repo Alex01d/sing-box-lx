@@ -24,7 +24,7 @@
 // firefox: HelloFirefox_148 reshaped on the Firefox 149 capture, PQ stripped,
 // one CRYPTO frame; the neqo header (3-byte SCID, pn_len 2, zero fill after the
 // packet) is applied by quic_initial_awg.go.
-package awgprofile
+package wireguard
 
 import (
 	"context"

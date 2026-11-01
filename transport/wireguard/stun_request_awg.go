@@ -25,7 +25,7 @@
 // structural presence — not cryptographic validity against a real session — is
 // what a DPI can check. Fresh transaction ID, ufrag, tie-breaker and integrity
 // key per call ⇒ no cross-user signature.
-package awgprofile
+package wireguard
 
 import (
 	"crypto/hmac"

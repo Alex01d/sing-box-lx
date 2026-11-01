@@ -1,6 +1,6 @@
 //go:build with_awg && with_utls
 
-package awgprofile
+package wireguard
 
 import (
 	"bytes"

@@ -1,8 +1,9 @@
 //go:build with_awg
 
-package awgprofile
+package wireguard
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sagernet/sing-box/option"
@@ -16,7 +17,7 @@ import (
 // spec, the two switches are emitted as 1.
 func TestAwgIpcLinesAWG3(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{
+	lines, err := awgIpcLines(option.AmneziaWGOptions{
 		Jc: 4, Jmin: 10, Jmax: 50,
 		S1: 55, S2: 42, S3: 40, S4: 12,
 		H1: "1", H2: "2", H3: "3", H4: "4",
@@ -46,7 +47,7 @@ func TestAwgIpcLinesAWG3(t *testing.T) {
 // exactly as before AWG 3.x support.
 func TestAwgIpcLinesAWG3UnsetOmitted(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{Jc: 4, Jmin: 40, Jmax: 70, S4: 12})
+	lines, err := awgIpcLines(option.AmneziaWGOptions{Jc: 4, Jmin: 40, Jmax: 70, S4: 12})
 	require.NoError(t, err)
 	require.Equal(t, "\njc=4\njmin=40\njmax=70\ns4=12", lines)
 }
@@ -54,7 +55,7 @@ func TestAwgIpcLinesAWG3UnsetOmitted(t *testing.T) {
 // A single-value timing ("rekey_timeout": 5) renders as a plain number.
 func TestAwgIpcLinesAWG3SingleValueRange(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{RekeyTimeout: "5", KeepaliveTimeout: "10-10"})
+	lines, err := awgIpcLines(option.AmneziaWGOptions{RekeyTimeout: "5", KeepaliveTimeout: "10-10"})
 	require.NoError(t, err)
 	require.Equal(t, "\nrekey_timeout=5\nkeepalive_timeout=10", lines)
 }
@@ -73,13 +74,13 @@ func TestAwgIpcLinesHeaderKeyRequiresPadding(t *testing.T) {
 		{option.AmneziaWGOptions{HeaderProtectionKey: key, S1: 11, S2: 42, S3: 40, S4: 12}, "s1"},
 		{option.AmneziaWGOptions{HeaderProtectionKey: key}, "s1"},
 	} {
-		_, err := IPC(o.options)
+		_, err := awgIpcLines(o.options)
 		require.Error(t, err)
 		require.ErrorContains(t, err, o.field)
 		require.ErrorContains(t, err, "header_protection_key")
 	}
 	// exactly 12 everywhere is enough
-	_, err := IPC(option.AmneziaWGOptions{HeaderProtectionKey: key, S1: 12, S2: 12, S3: 12, S4: 12})
+	_, err := awgIpcLines(option.AmneziaWGOptions{HeaderProtectionKey: key, S1: 12, S2: 12, S3: 12, S4: 12})
 	require.NoError(t, err)
 }
 
@@ -88,19 +89,19 @@ func TestAwgIpcLinesHeaderKeyFormat(t *testing.T) {
 	pad := option.AmneziaWGOptions{S1: 12, S2: 12, S3: 12, S4: 12}
 	bad := pad
 	bad.HeaderProtectionKey = "not base64!"
-	_, err := IPC(bad)
+	_, err := awgIpcLines(bad)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "header_protection_key")
 
 	short := pad
 	short.HeaderProtectionKey = "AAAA"
-	_, err = IPC(short)
+	_, err = awgIpcLines(short)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "32 bytes")
 
 	zero := pad
 	zero.HeaderProtectionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-	_, err = IPC(zero)
+	_, err = awgIpcLines(zero)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "all zeros")
 }
@@ -109,10 +110,10 @@ func TestAwgIpcLinesHeaderKeyFormat(t *testing.T) {
 // bypass JSON validation).
 func TestAwgIpcLinesAWG3InvalidRange(t *testing.T) {
 	t.Parallel()
-	_, err := IPC(option.AmneziaWGOptions{RejectAfterTime: "180-150"})
+	_, err := awgIpcLines(option.AmneziaWGOptions{RejectAfterTime: "180-150"})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "reject_after_time")
-	_, err = IPC(option.AmneziaWGOptions{ContentPaddingAddition: "ten"})
+	_, err = awgIpcLines(option.AmneziaWGOptions{ContentPaddingAddition: "ten"})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "content_padding_addition")
 }
@@ -121,11 +122,15 @@ func TestAwgIpcLinesAWG3InvalidRange(t *testing.T) {
 func TestAwgKeepaliveSpec(t *testing.T) {
 	t.Parallel()
 	for spec, want := range map[option.AWGRange]string{"25": "25", "25-35": "25-35", "": "", "0": ""} {
-		got, err := KeepaliveSpec(spec)
+		got, err := awgKeepaliveSpec(spec)
 		require.NoError(t, err)
 		require.Equal(t, want, got)
 	}
-	_, err := KeepaliveSpec("35-25")
+	_, err := awgKeepaliveSpec("35-25")
 	require.Error(t, err)
 
+	lines := peerConfig{publicKeyHex: "aa", keepalive: "25-35"}.GenerateIpcLines()
+	require.True(t, strings.HasSuffix(lines, "\npersistent_keepalive_interval=25-35"), lines)
+	lines = peerConfig{publicKeyHex: "aa", keepalive: ""}.GenerateIpcLines()
+	require.NotContains(t, lines, "persistent_keepalive_interval")
 }

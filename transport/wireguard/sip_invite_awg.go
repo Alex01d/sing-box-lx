@@ -30,7 +30,7 @@
 //
 // REQUIRES junk packets. This profile is meant to be used with jc/jmin/jmax > 0:
 // the masquerade decoy rides out alongside junk in the same pre-handshake burst.
-package awgprofile
+package wireguard
 
 import (
 	"strings"

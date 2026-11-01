@@ -6,7 +6,7 @@
 // accepted and validated upstream; it simply has no effect without with_utls.
 // (LX_TAGS includes with_utls, so release builds take the real path in
 // quic_clienthello_utls_awg.go; this only covers a with_awg-without-with_utls build.)
-package awgprofile
+package wireguard
 
 import (
 	"crypto/ecdh"

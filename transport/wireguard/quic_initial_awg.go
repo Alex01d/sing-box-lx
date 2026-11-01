@@ -28,7 +28,7 @@
 // live QUIC sniffer in common/sniff/quic.go — which doubles as the reverse
 // parser the tests use to verify our own output (decrypt, frame-walk,
 // reassemble, SNI).
-package awgprofile
+package wireguard
 
 import (
 	"crypto"
@@ -413,7 +413,7 @@ func encryptInitial(header, payload, key, iv, hp []byte, pnOffset, pnLen int, pn
 // DCID/SCID, TLS random, ephemeral x25519 key and (for chrome) a fresh chaos
 // layout are generated per call, so every invocation yields a unique
 // ciphertext and frame layout — the caller is expected to invoke it per
-// handshake (see DecoyPackets).
+// handshake (see awgDecoyFunc).
 func buildInitialPacket(sni, browser string, p quicGenParams) ([]byte, error) {
 	dcid := make([]byte, quicDCIDLen)
 	if _, err := rand.Read(dcid); err != nil {

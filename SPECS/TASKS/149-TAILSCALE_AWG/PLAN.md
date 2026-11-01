@@ -9,7 +9,7 @@
 переписывать историю. При занятом upstream номере задачи перенумеровать только
 неопубликованную AWG-задачу; опубликованная 148 относится к OOM runtime memory.
 
-Публичная дельта включает reusable core implementation, shared codec refactor,
+Публичная дельта включает reusable core implementation, WireGuard-owned codec,
 protobuf sources/artifacts, minimal pinned dependency patches, isolated lab,
 технические specifications и инструкции для проверки. Удалить из новых docs
 личные endpoints, сведения об устройствах/инфраструктуре, локальные пути,
@@ -34,9 +34,11 @@ protobuf sources/artifacts, minimal pinned dependency patches, isolated lab,
 3. Применять typed profile к per-device initializer после cleanup registration,
    до Up/первого пакета. Сохранить headroom8, scoped monitor/carrier lifecycle,
    profile isolation, rekey/reload и обычное поведение без AWG.
-4. Использовать общий transport/awgprofile для validate/render/configure,
-   оставить standalone WireGuard адаптер тонким. Новая подсистема изолирована
-   build tag with_tailscale_awg; неполная capability отклоняет профиль явно.
+4. Сохранить AWG codec/helpers/tests/testdata на исходных путях transport/wireguard.
+   protocol/tailscale напрямую импортирует этот пакет через узкий typed API
+   CompileTailscaleAWGProfile/TailscaleAWGProfile.Apply. Raw IPC и старые helpers
+   остаются private; новой общей package boundary нет. Build tag with_tailscale_awg
+   и отказ при неполной capability сохраняются.
 5. Добавить optional status через существующий adapter/protobuf/libbox путь.
    Не включать секреты в fingerprint/status/errors и не считать control login
    или DISCO ping доказательством data plane.
@@ -57,9 +59,23 @@ unsupported полей/узлов. Static CIDR/DNS protection живёт нез�
 mobile handoff, Windows/macOS DNS/route/handoff или iOS integration. Все эти
 незавершённые gates отражаются в TASKS.md и issue вместо утверждения о релизе.
 
-## CI сохранность shared codec regressions
+## Проверка прямого WireGuard импорта и upstream/testing
 
-При переносе AWG helpers/tests в transport/awgprofile добавить новый пакет в
-существующие lx-ci vet и AWG test lists, сохраняя прежние transport/wireguard
-checks. Новый Tailscale DNS regression запускать по имени с default capability
-tags; этот source-level gate не требует external AWG dependency workspace.
+До изменения кода сохранить исходный snapshot. Вернуть ранее перемещённые
+AWG helpers/tests/fixtures на исходные пути, сохранив standalone bytes и tags.
+Удалить package transport/awgprofile и делегирующий adapter. Tailscale-specific
+profile validator размещается в новом tailscale_awg_lx.go внутри transport/wireguard;
+экспортируются только typed compiler и immutable profile с Apply. Непроверенный
+IPC не становится public API. Существующие CI WireGuard package lists вновь
+покрывают codec tests без отдельного нового пакета; DNS regression сохраняется.
+
+Проверить import graph и named regressions с/без with_awg и with_gvisor,
+обычный Tailscale и полный opt-in AWG CLI через pinned external go.work.
+Не менять protocol/schema/protobuf, dependency patch bytes, submodule pins,
+потребителей или работающие VPN.
+
+Отдельно прочитать закреплённый SagerNet/sing-box upstream/testing и его
+sing-tun/Tailscale pins. В PORTING_1_15.md перечислить фактические изменения
+stack/build tags/API и обязательную адаптацию AWG/Tailscale. Это compatibility
+audit, а не merge/testing port или обещание готовности1.15. История прежней
+package boundary переносится в HISTORY.md.

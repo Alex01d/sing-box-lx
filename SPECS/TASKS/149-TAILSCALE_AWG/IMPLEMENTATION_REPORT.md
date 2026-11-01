@@ -6,7 +6,7 @@
 
 ## Реализация
 
-- Optional typed endpoints[].awg (version2/3), shared validation/codec и
+- Optional typed endpoints[].awg (version2/3), WireGuard-owned validation/codec и
   build capability with_tailscale_awg. Invalid/unsupported profiles fail closed.
 - Per-device ранний hook, framing classifier direct/DERP, headroom8, scoped
   profile/carrier lifecycle; thin pinned dependency patches и security guards.
@@ -50,7 +50,7 @@ consumer CI и публикация release dependency pin остаются от
 - Default canonical CLI build с GOWORK=off — PASS.
 - Opt-in canonical AWG build через pinned/checksummed external bootstrap — PASS.
 - TestTailscaleAWGProfileValidationLX, TestTailscaleDNSIsolationRegressionLX и
-  TestAwgKeepalivePeerConfigLX — PASS, только эти named regressions.
+  TestAwgKeepaliveSpec — PASS, только эти named regressions.
 - CLI config boundaries:14cases PASS, включая missing-capability fail-closed
   и обычный Tailscale без integration tag.
 - Reference overlay helpers:9tests PASS на чистом pinned reference; Python
@@ -65,7 +65,31 @@ consumer CI и публикация release dependency pin остаются от
 меняет OOM/status, а transport patch/codec pins не изменены. Windows/macOS и
 остальные release/platform gates остаются открыты.
 
-CI package lists дополнены transport/awgprofile после переноса существующих
-codec tests; ordinary Tailscale DNS regression зарегистрирован по имени и
-также прошёл локально без integration tag/external workspace. Workflow YAML
-разбирается, curated Go files проходят gofmt, git diff --check — PASS.
+## Ревью границы transport/wireguard
+
+Убран отдельный transport/awgprofile и делегирующие wrappers. Codec/helpers/
+tests/testdata возвращены на исходные пути;20 legacy files совпадают с
+origin/lx byte-for-byte. Восстановлен исходный AWG3 peer-config regression,
+отдельный дублирующий test удалён. protocol/tailscale импортирует WireGuard
+напрямую через CompileTailscaleAWGProfile/TailscaleAWGProfile.Apply; raw IPC
+остаётся private. Profile/frame/fingerprint semantics не менялись.
+
+Проверки после изменения:
+
+- Import graph подтверждает protocol/tailscale → transport/wireguard и отсутствие
+  обратного импорта/нового пакета; полный AWG CLI собирается.
+- Named no-AWG stub, AWG2/3/profile/MASQUE/QUIC/capture regressions, gVisor profile
+  и обычный Tailscale DNS regression — PASS. AWG helpers компилируются и
+  проверяются без with_gvisor; текущий1.14 endpoint guard сохранён.
+- Канонические обычный и opt-in AWG CLI builds — PASS. Tagless go build ./...
+  с требуемым -ldflags=-checklinkname=0 — PASS. Без этого flag bare build
+  останавливается на runtime/pprof linkname в существующем experimental/boxdd;
+  эта область не менялась.
+-14 CLI config/capability boundaries и дополнительный synthetic AWG3.1 profile
+  check — PASS. Dependency patch bytes, proto/schema и submodule pins прежние.
+- CI вновь использует исходный transport/wireguard package для всех legacy
+  codec regressions; отдельный package list не нужен, named DNS gate сохранён.
+
+[PORTING_1_15.md](PORTING_1_15.md) описывает проверенный testing с новым
+sing-tun.Go: это source audit/patch applicability, не готовый порт и не runtime
+приёмка1.15. Новые client/router binaries не развёртывались.

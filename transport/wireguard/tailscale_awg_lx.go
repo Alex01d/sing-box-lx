@@ -1,6 +1,6 @@
 //go:build with_awg
 
-package awgprofile
+package wireguard
 
 import (
 	"crypto/sha256"
@@ -18,9 +18,9 @@ import (
 
 var profileIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-// Profile is an immutable, validated per-device profile. IPC is deliberately
+// TailscaleAWGProfile is an immutable, validated per-device profile. Raw IPC is
 // private: callers can apply typed options, not submit arbitrary device commands.
-type Profile struct {
+type TailscaleAWGProfile struct {
 	Mode        string
 	ID          string
 	Fingerprint string
@@ -28,7 +28,8 @@ type Profile struct {
 	ipc         string
 }
 
-func CompileTailscale(o option.TailscaleAWGOptions) (*Profile, error) {
+// CompileTailscaleAWGProfile validates a typed profile without exposing raw IPC.
+func CompileTailscaleAWGProfile(o option.TailscaleAWGOptions) (*TailscaleAWGProfile, error) {
 	if o.Version != 2 && o.Version != 3 {
 		return nil, errors.New("awg.version must be 2 or 3")
 	}
@@ -112,7 +113,7 @@ func CompileTailscale(o option.TailscaleAWGOptions) (*Profile, error) {
 	if !p.IsSet() || !effective {
 		return nil, errors.New("awg.parameters must enable non-standard framing or decoys")
 	}
-	ipc, err := IPC(p)
+	ipc, err := awgIpcLines(p)
 	if err != nil {
 		// The standalone codec retains its existing diagnostics; profiles must
 		// never echo CPS contents, domain values, ranges, or a header key.
@@ -126,13 +127,13 @@ func CompileTailscale(o option.TailscaleAWGOptions) (*Profile, error) {
 		return nil, fmt.Errorf("awg.%s is invalid", field)
 	}
 	digest := sha256.Sum256([]byte(strconv.Itoa(o.Version) + "\n" + ipc))
-	return &Profile{Mode: fmt.Sprintf("awg%d", o.Version), ID: o.ProfileID, Fingerprint: hex.EncodeToString(digest[:]), parameters: p, ipc: ipc}, nil
+	return &TailscaleAWGProfile{Mode: fmt.Sprintf("awg%d", o.Version), ID: o.ProfileID, Fingerprint: hex.EncodeToString(digest[:]), parameters: p, ipc: ipc}, nil
 }
 
-func (p *Profile) Apply(d *device.Device, logger log.ContextLogger) error {
+func (p *TailscaleAWGProfile) Apply(d *device.Device, logger log.ContextLogger) error {
 	if err := d.IpcSet(strings.TrimSpace(p.ipc) + "\n\n"); err != nil {
 		return errors.New("AWG device profile could not be applied")
 	}
-	d.SetDecoyPacketsFunc(DecoyPackets(p.parameters, logger))
+	d.SetDecoyPacketsFunc(awgDecoyFunc(p.parameters, logger))
 	return nil
 }

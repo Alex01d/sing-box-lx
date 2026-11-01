@@ -56,3 +56,6 @@ profile provisioning и массовая миграция пользовател
 
 Изолированные tests и инструкции — [lab](../../../lx-test/tailscale-awg/README.md),
 граница dependency/security — [COMPATIBILITY](../../TASKS/149-TAILSCALE_AWG/COMPATIBILITY.md).
+AWG codec остаётся в transport/wireguard; Tailscale использует прямой typed API.
+Аудит следующего stack — [PORTING_1_15](../../TASKS/149-TAILSCALE_AWG/PORTING_1_15.md),
+перенос на1.15 остаётся отдельным открытым gate.

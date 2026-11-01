@@ -42,7 +42,14 @@ Headscale/DERP HTTPS; изменение их протокола в scope не �
 `parameters`. `profile_id` — необязательная метка `[A-Za-z0-9._-]{1,64}`.
 Profile ID не является ключом или разрешением. Обе стороны согласуют framing.
 
-Typed parameters переиспользуют AmneziaWGOptions и общий codec:
+Typed parameters переиспользуют AmneziaWGOptions и существующий codec в
+transport/wireguard. protocol/tailscale импортирует этот пакет напрямую через
+CompileTailscaleAWGProfile; private IPC/decoy helpers остаются внутри wireguard.
+Отдельный transport/awgprofile не требуется. Profile Apply зависит от WireGuard
+device API; gVisor/stack реализация не входит в эту typed границу. Текущие
+Tailscale build/dependency требования проверяются отдельно от этой границы.
+
+Параметры:
 
 - Jc/Jmin/Jmax, S1–S4, H1–H4; диапазоны и bounds проверяются до запуска.
 - AWG3 поддерживает header protection, padding, random trailers и диапазоны

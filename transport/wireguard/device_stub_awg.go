@@ -1,6 +1,6 @@
 //go:build !with_awg
 
-package awgprofile
+package wireguard
 
 import (
 	"github.com/sagernet/sing-box/log"
@@ -9,24 +9,24 @@ import (
 	"github.com/sagernet/wireguard-go/device"
 )
 
-// IPC is the no-`with_awg` stub. AmneziaWG obfuscation is not compiled
+// awgIpcLines is the no-`with_awg` stub. AmneziaWG obfuscation is not compiled
 // in, so any endpoint that configures AWG fields is rejected with an explicit
 // error instead of silently falling back to plain WireGuard — a silent
 // downgrade would strip the obfuscation the user asked for. When no AWG field
 // is set it returns "" and the endpoint behaves exactly like upstream
 // WireGuard.
-func IPC(o option.AmneziaWGOptions) (string, error) {
+func awgIpcLines(o option.AmneziaWGOptions) (string, error) {
 	if o.IsSet() {
 		return "", E.New("AmneziaWG (awg) support is not included in this build, rebuild with -tags with_awg")
 	}
 	return "", nil
 }
 
-// KeepaliveSpec is the no-`with_awg` stub for the per-peer
+// awgKeepaliveSpec is the no-`with_awg` stub for the per-peer
 // persistent_keepalive_interval: the plain number WireGuard has always
 // accepted passes through, the AWG 3.x "min-max" range is rejected like every
 // other AWG field.
-func KeepaliveSpec(keepalive option.AWGRange) (string, error) {
+func awgKeepaliveSpec(keepalive option.AWGRange) (string, error) {
 	spec, err := keepalive.Spec()
 	if err != nil {
 		return "", err
@@ -37,8 +37,8 @@ func KeepaliveSpec(keepalive option.AWGRange) (string, error) {
 	return spec, nil
 }
 
-// DecoyPackets (no-AWG build): there is no masquerade generator, so no dynamic
-// decoy; IPC already rejected any AWG field.
-func DecoyPackets(o option.AmneziaWGOptions, logger log.ContextLogger) device.DecoyPacketsFunc {
+// awgDecoyFunc (no-AWG build): there is no masquerade generator, so no dynamic
+// decoy; awgIpcLines already rejected any AWG field.
+func awgDecoyFunc(o option.AmneziaWGOptions, logger log.ContextLogger) device.DecoyPacketsFunc {
 	return nil
 }

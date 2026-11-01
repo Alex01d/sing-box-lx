@@ -4,8 +4,9 @@ package tailscale
 
 import (
 	"errors"
+
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-box/transport/awgprofile"
+	"github.com/sagernet/sing-box/transport/wireguard"
 	"github.com/sagernet/wireguard-go/device"
 )
 
@@ -25,7 +26,7 @@ func configureAWGEndpoint(t *Endpoint, o *option.TailscaleAWGOptions, underlayMo
 		return errors.New("awg_ssh_server_unsupported: engineering builds are client-only")
 	}
 	t.logger.Warn("AWG engineering transport: peer relays are unsupported; direct UDP and DERP are available")
-	p, err := awgprofile.CompileTailscale(*o)
+	p, err := wireguard.CompileTailscaleAWGProfile(*o)
 	if err != nil {
 		return err
 	}

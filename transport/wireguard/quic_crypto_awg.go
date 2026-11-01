@@ -14,7 +14,7 @@
 // These are not "custom crypto": HKDF-Expand-Label is RFC 8446 §7.1 verbatim,
 // the salt is the RFC 9001 §5.2 QUIC v1 constant, and the AEAD is AES-128-GCM
 // with the TLS-1.3 XORed-nonce construction (RFC 8446 §5.3 / RFC 9001 §5.3).
-package awgprofile
+package wireguard
 
 import (
 	"crypto"

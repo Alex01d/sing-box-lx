@@ -15,7 +15,15 @@
 - [x] Source synchronization и protobuf regeneration с incoming runtime memory.
 - [x] Public-only reusable source/spec scope; private environments/logs excluded.
 
+## Текущее ревью границы
+
+- [x] Вернуть AWG helpers/tests/fixtures в transport/wireguard; прямой typed import.
+- [x] Проверить tag matrix, import graph, named regressions и обычную/AWG сборки.
+- [x] Зафиксировать upstream/testing gVisor/stack audit и план переноса1.15.
+
 ## До публикации релиза
+
+- [ ] Отдельный порт и runtime/consumer acceptance1.15 по PORTING_1_15.md.
 
 - [ ] Immutable опубликованная revision patched Tailscale dependency в go.mod.
 - [ ] Consumer CI и ручная desktop acceptance на поддерживаемых ОС.

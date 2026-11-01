@@ -12,7 +12,7 @@
 // so the sequence is unpredictable between users.
 //
 // Ported from the LxBox-side PseudoGen (§127).
-package awgprofile
+package wireguard
 
 import (
 	"crypto/rand"

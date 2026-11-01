@@ -1,6 +1,6 @@
 //go:build with_awg
 
-package awgprofile
+package wireguard
 
 import (
 	"strings"
@@ -13,7 +13,7 @@ import (
 
 func TestAwgIpcLines(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{
+	lines, err := awgIpcLines(option.AmneziaWGOptions{
 		Jc:   5,
 		Jmin: 10,
 		Jmax: 50,
@@ -38,7 +38,7 @@ func TestAwgIpcLines(t *testing.T) {
 
 func TestAwgIpcLinesSingleHeaders(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{
+	lines, err := awgIpcLines(option.AmneziaWGOptions{
 		H1: "1",
 		H2: "2",
 		H3: "3",
@@ -50,7 +50,7 @@ func TestAwgIpcLinesSingleHeaders(t *testing.T) {
 
 func TestAwgIpcLinesUnsetHeadersOmitted(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{
+	lines, err := awgIpcLines(option.AmneziaWGOptions{
 		Jc: 4,
 		H2: "10-20",
 	})
@@ -62,7 +62,7 @@ func TestAwgIpcLinesUnsetHeadersOmitted(t *testing.T) {
 // upstream even in a with_awg build.
 func TestAwgIpcLinesPlainWireGuard(t *testing.T) {
 	t.Parallel()
-	lines, err := IPC(option.AmneziaWGOptions{})
+	lines, err := awgIpcLines(option.AmneziaWGOptions{})
 	require.NoError(t, err)
 	require.Equal(t, "", lines)
 }
@@ -71,18 +71,18 @@ func TestAwgIpcLinesPlainWireGuard(t *testing.T) {
 // layer must reject garbage with the key name instead of feeding it to uapi.
 func TestAwgIpcLinesInvalidHeader(t *testing.T) {
 	t.Parallel()
-	_, err := IPC(option.AmneziaWGOptions{H3: "100-50"})
+	_, err := awgIpcLines(option.AmneziaWGOptions{H3: "100-50"})
 	require.Error(t, err)
 	require.ErrorContains(t, err, "h3")
 }
 
 // jmin > jmax makes amneziawg-go's rand.Int argument <= 0, which panics in the
-// retransmit-timer goroutine. IPC must reject it at config time instead
+// retransmit-timer goroutine. awgIpcLines must reject it at config time instead
 // — and must not panic doing so.
 func TestAwgIpcLinesJminGreaterThanJmax(t *testing.T) {
 	t.Parallel()
 	require.NotPanics(t, func() {
-		_, err := IPC(option.AmneziaWGOptions{Jc: 5, Jmin: 70, Jmax: 40})
+		_, err := awgIpcLines(option.AmneziaWGOptions{Jc: 5, Jmin: 70, Jmax: 40})
 		require.Error(t, err)
 		require.ErrorContains(t, err, "jmin")
 		require.ErrorContains(t, err, "jmax")
@@ -93,15 +93,15 @@ func TestAwgIpcLinesJminGreaterThanJmax(t *testing.T) {
 // a fully-disabled junk config must both pass.
 func TestAwgIpcLinesValidJunkRange(t *testing.T) {
 	t.Parallel()
-	_, err := IPC(option.AmneziaWGOptions{Jc: 4, Jmin: 40, Jmax: 70})
+	_, err := awgIpcLines(option.AmneziaWGOptions{Jc: 4, Jmin: 40, Jmax: 70})
 	require.NoError(t, err)
-	_, err = IPC(option.AmneziaWGOptions{H1: "1"}) // junk off, only a header
+	_, err = awgIpcLines(option.AmneziaWGOptions{H1: "1"}) // junk off, only a header
 	require.NoError(t, err)
 }
 
-// ip=quic is a dynamic decoy: IPC emits no static i1/i2 for it (a
+// ip=quic is a dynamic decoy: awgIpcLines emits no static i1/i2 for it (a
 // baked CPS blob would repeat the same DCID and ciphertext on every handshake),
-// and DecoyPackets hands the device a generator that builds ONE fresh Initial
+// and awgDecoyFunc hands the device a generator that builds ONE fresh Initial
 // per call — the whole ClientHello in one QUIC packet (a multi-packet start is
 // dropped on the WARP path, LxBox §618). The non-QUIC profiles stay static CPS.
 func TestAwgIpcLinesQUICDynamicDecoy(t *testing.T) {
@@ -109,12 +109,12 @@ func TestAwgIpcLinesQUICDynamicDecoy(t *testing.T) {
 	const sni = "www.google.com"
 	for _, ib := range []string{"chrome", "chrome-full", "firefox", ""} {
 		o := option.AmneziaWGOptions{Id: sni, Ip: "quic", Ib: ib}
-		lines, err := IPC(o)
+		lines, err := awgIpcLines(o)
 		require.NoError(t, err, "ib=%q", ib)
 		require.Empty(t, ipcValue(t, lines, "i1"), "ib=%q: quic decoy is not a static i1", ib)
 		require.Empty(t, ipcValue(t, lines, "i2"), "ib=%q: i2 empty", ib)
 
-		gen := DecoyPackets(o, nil)
+		gen := awgDecoyFunc(o, nil)
 		require.NotNil(t, gen, "ib=%q: dynamic decoy generator", ib)
 		a, b := gen(), gen()
 		require.Len(t, a, 1, "ib=%q: one Initial per handshake", ib)
@@ -132,9 +132,9 @@ func TestAwgIpcLinesQUICDynamicDecoy(t *testing.T) {
 	}
 
 	// Static profiles and plain configs have no dynamic decoy.
-	require.Nil(t, DecoyPackets(option.AmneziaWGOptions{Id: sni, Ip: "dns"}, nil))
-	require.Nil(t, DecoyPackets(option.AmneziaWGOptions{Jc: 4, Jmin: 40, Jmax: 70}, nil))
-	lines, err := IPC(option.AmneziaWGOptions{Id: sni, Ip: "dns"})
+	require.Nil(t, awgDecoyFunc(option.AmneziaWGOptions{Id: sni, Ip: "dns"}, nil))
+	require.Nil(t, awgDecoyFunc(option.AmneziaWGOptions{Jc: 4, Jmin: 40, Jmax: 70}, nil))
+	lines, err := awgIpcLines(option.AmneziaWGOptions{Id: sni, Ip: "dns"})
 	require.NoError(t, err)
 	require.NotEmpty(t, ipcValue(t, lines, "i1"), "dns stays a static i1")
 }
@@ -149,7 +149,7 @@ func TestAwgIpcLinesNonSIPNoI2(t *testing.T) {
 		{Ip: "stun"},
 		{Id: "a.com", Ip: "sip"},
 	} {
-		lines, err := IPC(o)
+		lines, err := awgIpcLines(o)
 		require.NoError(t, err)
 		require.NotEmpty(t, ipcValue(t, lines, "i1"), "i1 present for ip=%s", o.Ip)
 		require.Empty(t, ipcValue(t, lines, "i2"), "i2 empty for ip=%s", o.Ip)
@@ -161,7 +161,7 @@ func TestAwgIpcLinesNonSIPNoI2(t *testing.T) {
 func TestAwgIpcLinesSIPFillsI1(t *testing.T) {
 	t.Parallel()
 	const host = "pbx.example.com"
-	lines, err := IPC(option.AmneziaWGOptions{Id: host, Ip: "sip", I2: "<b 0x0844>"})
+	lines, err := awgIpcLines(option.AmneziaWGOptions{Id: host, Ip: "sip", I2: "<b 0x0844>"})
 	require.NoError(t, err)
 
 	invite := string(obfuscateCPS(t, ipcValue(t, lines, "i1")))
@@ -169,7 +169,7 @@ func TestAwgIpcLinesSIPFillsI1(t *testing.T) {
 	require.Equal(t, "<b 0x0844>", ipcValue(t, lines, "i2"), "user i2 passes through")
 }
 
-// ipcValue extracts the value of a "\nkey=value" line from IPC output,
+// ipcValue extracts the value of a "\nkey=value" line from awgIpcLines output,
 // or "" if absent.
 func ipcValue(t *testing.T, lines, key string) string {
 	t.Helper()

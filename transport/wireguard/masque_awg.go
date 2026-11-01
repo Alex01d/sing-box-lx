@@ -28,7 +28,7 @@
 // actually emit, and entropy comes from the engine's <r N> tag (cryptographic
 // randomness, fresh per packet) rather than a payload-seeded LCG. This is an
 // honest decoy, not a byte-for-byte replay of WireSock traffic.
-package awgprofile
+package wireguard
 
 import (
 	"encoding/hex"
