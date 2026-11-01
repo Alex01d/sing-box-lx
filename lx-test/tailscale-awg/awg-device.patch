@@ -1,0 +1,572 @@
+diff --git a/tsnet/tsnet.go b/tsnet/tsnet.go
+index 976081cb..43b585da 100644
+--- a/tsnet/tsnet.go
++++ b/tsnet/tsnet.go
+@@ -208,6 +208,13 @@
+ //
+ // Its exported fields may be changed until the first method call.
+ type Server struct {
++	// lx:begin tailscale_awg
++	// WireGuardDeviceInit configures this server's device before it is brought up.
++	WireGuardDeviceInit wgengine.WireGuardDeviceInit
++	PacketListenerLX    nettype.PacketListenerWithNetIP
++	ForceDERPLX         bool
++	// lx:end tailscale_awg
++
+ 	// Dir specifies the name of the directory to use for
+ 	// state. If empty, a directory is selected automatically
+ 	// under os.UserConfigDir (https://golang.org/pkg/os/#UserConfigDir).
+@@ -856,6 +863,11 @@ func (s *Server) start() (reterr error) {
+ 	s.dialer = &tsdial.Dialer{Logf: tsLogf, Dialer: s.Dialer} // mutated below (before used)
+ 	s.dialer.SetBus(sys.Bus.Get())
+ 	engineConfig := wgengine.Config{
++		// lx:begin tailscale_awg
++		WireGuardDeviceInit: s.WireGuardDeviceInit,
++		PacketListenerLX:    s.PacketListenerLX,
++		ForceDERPLX:         s.ForceDERPLX,
++		// lx:end tailscale_awg
+ 		Tun:           s.Tun,
+ 		DNS:           s.DNS,
+ 		EventBus:      sys.Bus.Get(),
+diff --git a/wgengine/userspace.go b/wgengine/userspace.go
+index 9b4c01fb..0740c2f3 100644
+--- a/wgengine/userspace.go
++++ b/wgengine/userspace.go
+@@ -44,6 +44,7 @@
+ 	"github.com/sagernet/tailscale/types/ipproto"
+ 	"github.com/sagernet/tailscale/types/key"
+ 	"github.com/sagernet/tailscale/types/logger"
++	"github.com/sagernet/tailscale/types/nettype"
+ 	"github.com/sagernet/tailscale/types/views"
+ 	"github.com/sagernet/tailscale/util/checkchange"
+ 	"github.com/sagernet/tailscale/util/clientmetric"
+@@ -172,6 +173,12 @@ type userspaceEngine struct {
+ 
+ // Config is the engine configuration.
+ type Config struct {
++	// lx:begin tailscale_awg
++	WireGuardDeviceInit WireGuardDeviceInit
++	PacketListenerLX    nettype.PacketListenerWithNetIP
++	ForceDERPLX         bool
++	// lx:end tailscale_awg
++
+ 	// Tun is the device used by the Engine to exchange packets with
+ 	// the OS.
+ 	// If nil, a fake Device that does nothing is used.
+@@ -435,22 +442,25 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error)
+ 		e.RequestStatus()
+ 	}
+ 	magicsockOpts := magicsock.Options{
+-		EventBus:       e.eventBus,
+-		Logf:           logf,
+-		Port:           conf.ListenPort,
+-		EndpointsFunc:  endpointsFn,
+-		DERPActiveFunc: e.RequestStatus,
+-		IdleFunc:       e.tundev.IdleDuration,
+-		NetMon:         e.netMon,
+-		HealthTracker:  e.health,
+-		ExtraRootCAs:   conf.ExtraRootCAs,
+-		DERPAppName:    conf.DERPAppName,
+-		Metrics:        conf.Metrics,
+-		ControlKnobs:   conf.ControlKnobs,
+-		PeerByKeyFunc:  e.PeerByKey,
+-		ForceDiscoKey:  conf.ForceDiscoKey,
+-		OnDERPRecv:     conf.OnDERPRecv,
+-		LookupHook:     conf.LookupHook,
++		PacketListenerLX:  conf.PacketListenerLX,
++		ForceDERPLX:       conf.ForceDERPLX,
++		DisablePortMapper: conf.PacketListenerLX != nil || conf.ForceDERPLX,
++		EventBus:          e.eventBus,
++		Logf:              logf,
++		Port:              conf.ListenPort,
++		EndpointsFunc:     endpointsFn,
++		DERPActiveFunc:    e.RequestStatus,
++		IdleFunc:          e.tundev.IdleDuration,
++		NetMon:            e.netMon,
++		HealthTracker:     e.health,
++		ExtraRootCAs:      conf.ExtraRootCAs,
++		DERPAppName:       conf.DERPAppName,
++		Metrics:           conf.Metrics,
++		ControlKnobs:      conf.ControlKnobs,
++		PeerByKeyFunc:     e.PeerByKey,
++		ForceDiscoKey:     conf.ForceDiscoKey,
++		OnDERPRecv:        conf.OnDERPRecv,
++		LookupHook:        conf.LookupHook,
+ 	}
+ 	var err error
+ 	e.magicConn, err = magicsock.NewConn(magicsockOpts)
+@@ -534,6 +544,15 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error)
+ 		}
+ 	})
+ 
++	// lx:begin tailscale_awg
++	if conf.WireGuardDeviceInit != nil {
++		if err := conf.WireGuardDeviceInit(e.wgdev); err != nil {
++			return nil, fmt.Errorf("initialize WireGuard transport: %w", err)
++		}
++		e.installWireGuardClassifierLX()
++	}
++	// lx:end tailscale_awg
++
+ 	go func() {
+ 		up := false
+ 		for event := range e.tundev.EventsUpDown() {
+diff --git a/wgengine/magicsock/magicsock.go b/wgengine/magicsock/magicsock.go
+index 64be7652..7bf957cc 100644
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -157,6 +157,10 @@ type metrics struct {
+ 
+ // A Conn routes UDP packets and actively manages a list of its endpoints.
+ type Conn struct {
++	// lx:begin tailscale_awg
++	wireGuardPacketClassifier syncs.AtomicValue[func([]byte) uint32]
++	// lx:end tailscale_awg
++
+ 	// This block mirrors the contents and field order of the Options
+ 	// struct. Initialized once at construction, then constant.
+ 
+@@ -167,12 +171,15 @@ type Conn struct {
+ 	derpActiveFunc         func()
+ 	idleFunc               func() time.Duration // nil means unknown
+ 	testOnlyPacketListener nettype.PacketListener
+-	onDERPRecv             func(int, key.NodePublic, []byte) bool // or nil, see Options.OnDERPRecv
+-	netMon                 *netmon.Monitor                        // must be non-nil
+-	health                 *health.Tracker                        // or nil
+-	extraRootCAs           *x509.CertPool                         // additional trusted root CAs; or nil
+-	controlKnobs           *controlknobs.Knobs                    // or nil
+-	derpAppName            string                                 // or empty, see Options.DERPAppName
++	// lx: per-engine proxy underlay; never falls through to the native socket.
++	packetListenerLX nettype.PacketListenerWithNetIP
++	forceDERPLX      bool
++	onDERPRecv       func(int, key.NodePublic, []byte) bool // or nil, see Options.OnDERPRecv
++	netMon           *netmon.Monitor                        // must be non-nil
++	health           *health.Tracker                        // or nil
++	extraRootCAs     *x509.CertPool                         // additional trusted root CAs; or nil
++	controlKnobs     *controlknobs.Knobs                    // or nil
++	derpAppName      string                                 // or empty, see Options.DERPAppName
+ 
+ 	// ================================================================
+ 	// No locking required to access these fields, either because
+@@ -485,6 +492,9 @@ type Options struct {
+ 	// TestOnlyPacketListener optionally specifies how to create PacketConns.
+ 	// Only used by tests.
+ 	TestOnlyPacketListener nettype.PacketListener
++	// lx: optional per-connection packet carrier.
++	PacketListenerLX nettype.PacketListenerWithNetIP
++	ForceDERPLX      bool
+ 
+ 	// NetMon is the network monitor to use.
+ 	// It must be non-nil.
+@@ -683,6 +693,8 @@ func NewConn(opts Options) (*Conn, error) {
+ 	c.derpActiveFunc = opts.derpActiveFunc()
+ 	c.idleFunc = opts.IdleFunc
+ 	c.testOnlyPacketListener = opts.TestOnlyPacketListener
++	c.packetListenerLX = opts.PacketListenerLX
++	c.forceDERPLX = opts.ForceDERPLX
+ 	c.onDERPRecv = opts.OnDERPRecv
+ 
+ 	// Set up publishers and subscribers. Subscribe calls must return before
+@@ -761,13 +773,13 @@ func NewConn(opts Options) (*Conn, error) {
+ 		c.homeDERPGauge = opts.Metrics.NewGauge("tailscaled_home_derp_region_id", "DERP region ID of this node's home relay server")
+ 	}
+ 
+-	if d4, err := c.listenRawDisco("ip4"); err == nil {
++	if d4, err := c.listenRawDiscoLX("ip4"); err == nil {
+ 		c.logf("[v1] using BPF disco receiver for IPv4")
+ 		c.closeDisco4 = d4
+ 	} else if !errors.Is(err, errors.ErrUnsupported) {
+ 		c.logf("[v1] couldn't create raw v4 disco listener, using regular listener instead: %v", err)
+ 	}
+-	if d6, err := c.listenRawDisco("ip6"); err == nil {
++	if d6, err := c.listenRawDiscoLX("ip6"); err == nil {
+ 		c.logf("[v1] using BPF disco receiver for IPv6")
+ 		c.closeDisco6 = d6
+ 	} else if !errors.Is(err, errors.ErrUnsupported) {
+@@ -1870,7 +1882,11 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
+ 	size = len(b)
+ 
+ 	var geneve packet.GeneveHeader
+-	pt, isGeneveEncap := packetLooksLike(b)
++	pt, isGeneveEncap := c.classifyWirePacketLX(b)
++	// lx: AWG peer relays are not accepted by the engineering integration.
++	if isGeneveEncap && c.wireGuardPacketClassifier.Load() != nil {
++		return nil, 0, false, false
++	}
+ 	src := epAddr{ap: ipp}
+ 	if isGeneveEncap {
+ 		err := geneve.Decode(b)
+@@ -1947,7 +1963,7 @@ func (c *Conn) receiveIP(b []byte, ipp netip.AddrPort, cache *epAddrEndpointCach
+ 			update(0, netip.AddrPortFrom(ep.nodeAddr, 0), ipp, 1, geneveInclusivePacketLen, true)
+ 		}
+ 	}
+-	if src.vni.IsSet() && (connNoted || looksLikeInitiationMsg(b)) {
++	if src.vni.IsSet() && (connNoted || c.isWireGuardInitiationLX(b)) {
+ 		// connNoted is periodic, but we also want to verify if the peer is who
+ 		// we believe for all initiation messages, otherwise we could get
+ 		// unlucky and fail to JIT configure the "correct" peer.
+@@ -2985,6 +3001,11 @@ func (c *Conn) updateRelayServersSet(filt *filter.Filter, self tailcfg.NodeView,
+ 	}
+ 	// [relayManager]'s run loop updates [relayManager.hasPeerRelayServers]
+ 	// to reflect the new server count.
++	// lx: no unproven AWG/Geneve path; direct UDP and DERP remain available.
++	if c.wireGuardPacketClassifier.Load() != nil && len(relayServers) > 0 {
++		c.logf("AWG: peer relay candidates refused; use direct UDP or DERP")
++		relayServers = nil
++	}
+ 	c.relayManager.handleRelayServersSet(relayServers)
+ }
+ 
+@@ -3423,6 +3444,10 @@ func (c *Conn) RemovePeer(nid tailcfg.NodeID) {
+ //
+ // It mirrors the per-peer predicate in [Conn.updateRelayServersSet].
+ func (c *Conn) relayCandidateLocked(p tailcfg.NodeView) (ok bool, cp candidatePeerRelay) {
++	// lx: AWG peer-relay support requires a separate interoperability gate.
++	if c.wireGuardPacketClassifier.Load() != nil {
++		return false, candidatePeerRelay{}
++	}
+ 	if !p.Valid() {
+ 		return false, candidatePeerRelay{}
+ 	}
+@@ -3739,6 +3764,10 @@ func (c *Conn) listenPacket(network string, port uint16) (nettype.PacketConn, er
+ 		ctx = sockstats.WithSockStats(ctx, sockstats.LabelMagicsockConnUDP6, c.logf)
+ 	}
+ 	addr := net.JoinHostPort("", fmt.Sprint(port))
++	// lx: a failed proxy listener is terminal for this bind, never native fallback.
++	if c.packetListenerLX != nil {
++		return c.packetListenerLX.ListenPacket(ctx, network, addr)
++	}
+ 	if c.testOnlyPacketListener != nil {
+ 		return nettype.MakePacketListenerWithNetIP(c.testOnlyPacketListener).ListenPacket(ctx, network, addr)
+ 	}
+@@ -3770,6 +3799,15 @@ func (c *Conn) bindSocket(ruc *RebindingUDPConn, network string, curPortFate cur
+ 		return nil
+ 	}
+ 
++	// lx:begin tailscale_underlay
++	if c.forceDERPLX {
++		if err := ruc.closeLocked(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, errNilPConn) {
++			c.logf("magicsock: bindSocket %v close failed: %v", network, err)
++		}
++		ruc.setConnLocked(newBlockForeverConn(), "", c.bind.BatchSize(), c.controlKnobs)
++		return nil
++	}
++	// lx:end tailscale_underlay
+ 	if debugAlwaysDERP() {
+ 		c.logf("disabled %v per TS_DEBUG_ALWAYS_USE_DERP", network)
+ 		ruc.setConnLocked(newBlockForeverConn(), "", c.bind.BatchSize(), c.controlKnobs)
+diff --git a/wgengine/magicsock/derp.go b/wgengine/magicsock/derp.go
+index 8f757a50..683ad8e2 100644
+--- a/wgengine/magicsock/derp.go
++++ b/wgengine/magicsock/derp.go
+@@ -743,7 +743,7 @@ func (c *Conn) processDERPReadResult(dm derpReadResult, b []byte) (n int, ep *en
+ 	}
+ 
+ 	srcAddr := epAddr{ap: netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, uint16(regionID))}
+-	pt, isGeneveEncap := packetLooksLike(b[:n])
++	pt, isGeneveEncap := c.classifyWirePacketLX(b[:n])
+ 	if pt == packetLooksLikeDisco &&
+ 		!isGeneveEncap { // We should never receive Geneve-encapsulated disco over DERP.
+ 		c.handleDiscoMessage(b[:n], srcAddr, false, dm.src, discoRXPathDERP)
+diff --git a/derp/derphttp/derphttp_client.go b/derp/derphttp/derphttp_client.go
+index 8f66dcf3..0c63df2a 100644
+--- a/derp/derphttp/derphttp_client.go
++++ b/derp/derphttp/derphttp_client.go
+@@ -716,6 +716,11 @@ func (c *Client) _DialRegionTLS(ctx context.Context, reg *tailcfg.DERPRegion) (t
+ }
+ 
+ func (c *Client) dialContext(ctx context.Context, proto, addr string) (net.Conn, error) {
++	// lx: explicit per-device carriers include DERP and its netcheck probes.
++	// A nil/unmarked dialer preserves the original native-underlay behavior.
++	if c.useConfiguredDERPDialerLX() {
++		return netns.NewDialer(c.logf, c.netMon).DialContext(ctx, proto, addr)
++	}
+ 	return netns.NewDialerAlwaysDirect(c.logf, c.netMon).DialContext(ctx, proto, addr)
+ }
+ 
+@@ -749,7 +754,7 @@ func (c *Client) dialNode(ctx context.Context, n *tailcfg.DERPNode) (net.Conn, e
+ 			Path:   "/", // unused
+ 		},
+ 	}
+-	if buildfeatures.HasUseProxy {
++	if buildfeatures.HasUseProxy && !c.useConfiguredDERPDialerLX() { // lx: explicit carrier wins over ambient proxy
+ 		if proxyFromEnv, ok := feature.HookProxyFromEnvironment.GetOk(); ok {
+ 			if proxyURL, err := proxyFromEnv(proxyReq); err == nil && proxyURL != nil {
+ 				return c.dialNodeUsingProxy(ctx, n, proxyURL)
+diff --git a/control/controlhttp/client.go b/control/controlhttp/client.go
+index 7a9e4d5e..017064c0 100644
+--- a/control/controlhttp/client.go
++++ b/control/controlhttp/client.go
+@@ -80,6 +80,12 @@ func (a *Dialer) getProxyFunc() func(*http.Request) (*url.URL, error) {
+ 	if a.proxyFunc != nil {
+ 		return a.proxyFunc
+ 	}
++	// lx: an explicit per-device carrier must not inherit another HTTP proxy.
++	if a.NetMon != nil {
++		if d, ok := a.NetMon.Dialer().(interface{ TailscaleUseConfiguredDialerLX() bool }); ok && d.TailscaleUseConfiguredDialerLX() {
++			return nil
++		}
++	}
+ 	return feature.HookProxyFromEnvironment.GetOrNil()
+ }
+ 
+diff --git a/derp/derphttp/underlay_lx.go b/derp/derphttp/underlay_lx.go
+new file mode 100644
+--- /dev/null
++++ b/derp/derphttp/underlay_lx.go
+@@ -0,0 +1,11 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package derphttp
++
++// An explicit per-device carrier owns DERP dialing, including latency probes.
++// Ambient HTTP proxies must not substitute another path behind the caller.
++func (c *Client) useConfiguredDERPDialerLX() bool {
++	d, ok := c.netMon.Dialer().(interface{ TailscaleUseConfiguredDialerLX() bool })
++	return ok && d.TailscaleUseConfiguredDialerLX()
++}
+diff --git a/wgengine/wireguard_device_lx.go b/wgengine/wireguard_device_lx.go
+new file mode 100644
+--- /dev/null
++++ b/wgengine/wireguard_device_lx.go
+@@ -0,0 +1,11 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package wgengine
++
++import "github.com/sagernet/wireguard-go/device"
++
++// WireGuardDeviceInit is an optional per-engine initializer. It runs after
++// cleanup is registered and before Up; an error aborts engine construction.
++// It must not change identity, peers, bind ownership, or routing.
++type WireGuardDeviceInit func(*device.Device) error
+diff --git a/wgengine/wireguard_classifier_lx.go b/wgengine/wireguard_classifier_lx.go
+new file mode 100644
+--- /dev/null
++++ b/wgengine/wireguard_classifier_lx.go
+@@ -0,0 +1,24 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package wgengine
++
++import "github.com/sagernet/wireguard-go/device"
++
++func (e *userspaceEngine) installWireGuardClassifierLX() {
++	e.magicConn.SetWireGuardPacketClassifierLX(func(b []byte) uint32 {
++		if len(b) < device.MinMessageSize {
++			return device.MessageUnknownType
++		}
++		cipher, err := e.wgdev.HeaderProtectionCipher(b)
++		if err != nil {
++			return device.MessageUnknownType
++		}
++		var mask [8]byte
++		if cipher != nil {
++			cipher.XORKeyStream(mask[:], mask[:])
++		}
++		_, kind, _ := e.wgdev.DeterminePacketTypeAndPadding(b, mask[:])
++		return kind
++	})
++}
+diff --git a/wgengine/magicsock/wireguard_classifier_lx.go b/wgengine/magicsock/wireguard_classifier_lx.go
+new file mode 100644
+--- /dev/null
++++ b/wgengine/magicsock/wireguard_classifier_lx.go
+@@ -0,0 +1,47 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++import (
++	"errors"
++	"io"
++
++	"github.com/sagernet/wireguard-go/device"
++)
++
++// SetWireGuardPacketClassifierLX installs the configured device's framing
++// classifier. Packet authentication remains the WireGuard device's job.
++func (c *Conn) SetWireGuardPacketClassifierLX(f func([]byte) uint32) {
++	c.wireGuardPacketClassifier.Store(f)
++}
++
++func (c *Conn) classifyWirePacketLX(b []byte) (packetLooksLikeType, bool) {
++	kind, geneve := packetLooksLike(b)
++	if f := c.wireGuardPacketClassifier.Load(); f != nil {
++		// Preserve complete native control signatures even for broad AWG H ranges.
++		// Geneve is checked only after the configured device's naked framing.
++		if !geneve && (kind == packetLooksLikeDisco || kind == packetLooksLikeSTUNBinding) {
++			return kind, false
++		}
++		if f(b) != device.MessageUnknownType {
++			return packetLooksLikeWireGuard, false
++		}
++	}
++	return kind, geneve
++}
++
++func (c *Conn) isWireGuardInitiationLX(b []byte) bool {
++	if f := c.wireGuardPacketClassifier.Load(); f != nil {
++		return f(b) == device.MessageInitiationType
++	}
++	return looksLikeInitiationMsg(b)
++}
++
++// Avoid even the native raw-DISCO self-test socket when an explicit carrier is used.
++func (c *Conn) listenRawDiscoLX(family string) (io.Closer, error) {
++	if c.packetListenerLX != nil || c.forceDERPLX {
++		return nil, errors.New("native raw disco disabled for explicit underlay")
++	}
++	return c.listenRawDisco(family)
++}
+diff --git a/wgengine/magicsock/awg_framing_lx_test.go b/wgengine/magicsock/awg_framing_lx_test.go
+new file mode 100644
+--- /dev/null
++++ b/wgengine/magicsock/awg_framing_lx_test.go
+@@ -0,0 +1,69 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++import (
++	"encoding/binary"
++	"net/netip"
++	"testing"
++
++	"github.com/sagernet/tailscale/disco"
++	"github.com/sagernet/tailscale/net/packet"
++	"github.com/sagernet/wireguard-go/device"
++)
++
++func TestAWGPaddingIsNotGeneveLX(t *testing.T) {
++	// A valid random S1 prefix can also look like a Geneve header. Stripping
++	// it destroys AWG framing before the configured device sees the packet.
++	b := make([]byte, 16+device.MessageInitiationSize)
++	binary.BigEndian.PutUint16(b[2:4], packet.GeneveProtocolWireGuard)
++	binary.LittleEndian.PutUint32(b[16:20], 100001)
++	// Without the optional classifier, upstream correctly sees Geneve.
++	if _, geneve := packetLooksLike(b); !geneve {
++		t.Fatal("fixture no longer exercises the Geneve collision")
++	}
++	c := new(Conn)
++	c.SetWireGuardPacketClassifierLX(func(packet []byte) uint32 {
++		if len(packet) == len(b) && binary.LittleEndian.Uint32(packet[16:20]) == 100001 {
++			return device.MessageInitiationType
++		}
++		return device.MessageUnknownType
++	})
++	kind, geneve := c.classifyWirePacketLX(b)
++	if kind != packetLooksLikeWireGuard || geneve {
++		t.Fatalf("AWG padding was classified as outer framing: kind=%v geneve=%v", kind, geneve)
++	}
++	if !c.isWireGuardInitiationLX(b) {
++		t.Fatal("AWG initiation is not recognized for peer-relay JIT lookup")
++	}
++	// Unproven peer-relay framing is explicitly refused, rather than stripped
++	// and handed to the AWG device as if it were a supported data path.
++	c.havePrivateKey.Store(true)
++	c.peerMap = newPeerMap()
++	encapsulated := make([]byte, 8+device.MessageInitiationSize)
++	binary.BigEndian.PutUint16(encapsulated[2:4], packet.GeneveProtocolWireGuard)
++	if _, _, _, ok := c.receiveIP(encapsulated, netip.MustParseAddrPort("192.0.2.1:41641"), new(epAddrEndpointCache)); ok {
++		t.Fatal("unsupported AWG peer-relay packet was accepted")
++	}
++	plain := new(Conn)
++	if _, geneve := plain.classifyWirePacketLX(b); !geneve {
++		t.Fatal("nil classifier changed upstream framing")
++	}
++	// Even a broad data-header range cannot consume full control signatures.
++	c.SetWireGuardPacketClassifierLX(func([]byte) uint32 { return device.MessageTransportType })
++	stun := make([]byte, 20)
++	stun[1] = 1
++	binary.BigEndian.PutUint32(stun[4:8], 0x2112a442)
++	discoPacket := make([]byte, discoHeaderLen+24)
++	copy(discoPacket, disco.Magic)
++	for _, control := range []struct {
++		packet []byte
++		want   packetLooksLikeType
++	}{{stun, packetLooksLikeSTUNBinding}, {discoPacket, packetLooksLikeDisco}} {
++		if kind, geneve := c.classifyWirePacketLX(control.packet); kind != control.want || geneve {
++			t.Fatal("AWG classifier consumed native control traffic")
++		}
++	}
++
++}
+diff --git a/wgengine/magicsock/force_derp_rebind_lx_test.go b/wgengine/magicsock/force_derp_rebind_lx_test.go
+new file mode 100644
+--- /dev/null
++++ b/wgengine/magicsock/force_derp_rebind_lx_test.go
+@@ -0,0 +1,68 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++import (
++	"net"
++	"testing"
++	"time"
++)
++
++func TestForceDERPRebindClosesPreviousConn(t *testing.T) {
++	for _, network := range []string{"udp4", "udp6"} {
++		t.Run(network, func(t *testing.T) {
++			c := &Conn{
++				forceDERPLX: true,
++				bind:        &connBind{},
++				logf:        func(string, ...any) {},
++			}
++			var ruc RebindingUDPConn
++			if err := c.bindSocket(&ruc, network, keepCurrentPort); err != nil {
++				t.Fatalf("initial bindSocket: %v", err)
++			}
++
++			for rebind := range 3 {
++				old := ruc.currentConn().(*blockForeverConn)
++
++				readDone := make(chan error, 1)
++				go func() {
++					_, _, err := old.ReadFromUDPAddrPort(make([]byte, 1))
++					readDone <- err
++				}()
++
++				if err := c.bindSocket(&ruc, network, keepCurrentPort); err != nil {
++					t.Fatalf("bindSocket rebind %d: %v", rebind, err)
++				}
++				select {
++				case err := <-readDone:
++					if err != net.ErrClosed {
++						t.Fatalf("previous connection read error = %v, want %v", err, net.ErrClosed)
++					}
++				case <-time.After(2 * time.Second):
++					_ = old.Close() // Keep a failing regression from leaking a reader.
++					t.Fatalf("previous connection remained blocked after forced-DERP rebind %d", rebind)
++				}
++			}
++
++			latest := ruc.currentConn()
++			latestReadDone := make(chan error, 1)
++			go func() {
++				_, _, err := latest.ReadFromUDPAddrPort(make([]byte, 1))
++				latestReadDone <- err
++			}()
++			if err := ruc.Close(); err != nil && err != net.ErrClosed {
++				t.Fatalf("final close: %v", err)
++			}
++			select {
++			case err := <-latestReadDone:
++				if err != net.ErrClosed {
++					t.Fatalf("latest connection read error = %v, want %v", err, net.ErrClosed)
++				}
++			case <-time.After(2 * time.Second):
++				_ = latest.Close()
++				t.Fatal("latest connection remained blocked after final close")
++			}
++		})
++	}
++}

@@ -16,6 +16,9 @@ type TailscaleEndpointStatusIterator interface {
 }
 
 type TailscaleEndpointStatus struct {
+	// lx:begin tailscale_awg
+	Transport *TailscaleTransportStatus
+	// lx:end tailscale_awg
 	EndpointTag        string
 	BackendState       string
 	StateText          string
@@ -145,7 +148,8 @@ func tailscaleEndpointStatusFromGRPC(status *daemon.TailscaleEndpointStatus) *Ta
 		ReceivingFileCount: status.ReceivingFileCount,
 		UnreadFileCount:    status.UnreadFileCount,
 		userGroups:         userGroups,
-		health:             status.Health, // lx: SPEC 115
+		health:             status.Health,                                  // lx: SPEC 115
+		Transport:          tailscaleTransportFromGRPCLX(status.Transport), // lx: SPEC 148
 	}
 	if status.Self != nil {
 		result.Self = tailscalePeerFromGRPC(status.Self)

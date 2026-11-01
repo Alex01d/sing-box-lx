@@ -13,6 +13,10 @@ import (
 )
 
 type TailscaleEndpointOptions struct {
+	// lx:begin tailscale_awg
+	AWG          *TailscaleAWGOptions `json:"awg,omitempty"`
+	UnderlayMode string               `json:"underlay_mode,omitempty"`
+	// lx:end tailscale_awg
 	DialerOptions
 	StateDirectory             string                     `json:"state_directory,omitempty"`
 	AuthKey                    string                     `json:"auth_key,omitempty"`

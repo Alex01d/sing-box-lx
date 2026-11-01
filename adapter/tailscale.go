@@ -51,6 +51,9 @@ type TailscalePingResult struct {
 }
 
 type TailscaleEndpointStatus struct {
+	// lx:begin tailscale_awg
+	Transport *TailscaleTransportStatus
+	// lx:end tailscale_awg
 	BackendState       string
 	AuthURL            string
 	NetworkName        string

@@ -84,6 +84,9 @@ func RegisterEndpoint(registry *endpoint.Registry) {
 }
 
 type Endpoint struct {
+	// lx:begin tailscale_awg
+	awgTransport *awgTransportState
+	// lx:end tailscale_awg
 	endpoint.Adapter
 	ctx               context.Context
 	router            adapter.Router
@@ -188,7 +191,7 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 	taildropDirectory = filemanager.BasePath(ctx, os.ExpandEnv(taildropDirectory))
 	taildropDirectory, _ = filepath.Abs(taildropDirectory)
-	return &Endpoint{
+	result := &Endpoint{
 		Adapter:           endpoint.NewAdapter(C.TypeTailscale, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, nil),
 		ctx:               ctx,
 		router:            router,
@@ -246,7 +249,13 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 		systemInterfaceName:        options.SystemInterfaceName,
 		systemInterfaceMTU:         options.SystemInterfaceMTU,
 		keyAuth:                    options.AuthKey != "",
-	}, nil
+	}
+	// lx:begin tailscale_awg
+	if err := configureAWGEndpoint(result, options.AWG, options.UnderlayMode); err != nil {
+		return nil, err
+	}
+	// lx:end tailscale_awg
+	return result, nil
 }
 
 func (t *Endpoint) References() []string {

@@ -28,6 +28,7 @@ func (t *Endpoint) TailscaleStatus() (*adapter.TailscaleEndpointStatus, error) {
 // on-demand getter.
 func (t *Endpoint) collectTailscaleStatus(localBackend *ipnlocal.LocalBackend) *adapter.TailscaleEndpointStatus {
 	result := convertTailscaleStatus(localBackend.Status())
+	result.Transport = t.awgTransportStatus()
 	result.KeyAuth = t.keyAuth
 	canShareFiles, taildropTargets := t.taildropTargets()
 	result.CanShareFiles = canShareFiles

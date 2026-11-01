@@ -1,0 +1,76 @@
+{
+  "core_baseline": "def84828b069eb6c7cb15c0017ee33b2abdb907e",
+  "go": "1.26.10",
+  "tailscale": {
+    "repository": "https://github.com/SagerNet/tailscale.git",
+    "revision": "79c1732442a9dfba9f80512247432a6ab7faca67"
+  },
+  "reference": {
+    "repository": "https://github.com/LiuTangLei/tailscale.git",
+    "revision": "f58b730c8c1eb30c00127e6a2ebe4fa0540d29f1",
+    "go": "1.27.3",
+    "patch": {
+      "file": "reference-derp-bind-close-ack.patch",
+      "sha256": "3c495cd39c3a52594433ba52497e8644ec45febead9b64aa2db212aa2414cc01",
+      "base_file": "wgengine/magicsock/derp.go",
+      "base_sha256": "da15a0d279c57184c5a5bad30e57ce760380582d8917afeefa97fbf471bbeed7",
+      "patched_sha256": "93721928aa26fd7bf1b4eae75422f17aff2d634d6a49e73e2865e3e58a5bf271",
+      "regression_file": "reference-derp-bind-close-ack_test.go.txt",
+      "regression_sha256": "752a616f5de3866d883982c081118beba38cf8da695f62bb1b443b6bd5dc816c",
+      "scope": "Reference-only borrowed-result acknowledgement before a closed DERP bind returns; no wire format, profile, key, queue or timeout change. Independent LiuTangLei WireGuard v0.0.34 is unchanged.",
+      "removal_condition": "Remove when the pinned independent reference includes equivalent closed-bind borrowed-result acknowledgement and the focused Close/Open regression and race gate pass. Recheck source/hash pins on every reference revision change."
+    }
+  },
+  "submodules": {
+    "wireguard-go": "7188e1516995adbb116e7dbe343b9eb1c2159c82",
+    "sing-tun": "1cb218d05b8d51331b10762772f330738df9de86",
+    "gvisor": "117243aa02fa2915cb53d1d4549bfca3a3ebf238",
+    "utls": "ad69b191e2f83367ec0ac5f3a1a61310732c43b9"
+  },
+  "patches": {
+    "awg-device.patch": "94b1f83f5b2e45875c1164d6fabf9637349835c6b625c54874cfa7fda6d5b854",
+    "security-serve.patch": "71d809710009928d638006099ad093a6c91deef5ab40ee566aee98d37933153c",
+    "derp-borrowed-read-ack.patch": "a4fc231bb3956d05a51c8fcd1e9dae8566e26bd09f9b388d094dfcc7629adb94"
+  },
+  "security_upstream_commits": [
+    "d090b5ab68ed68fcbfc01640e72aaee34a6ceb7f",
+    "21b7a44c4485ff625fa38f988daaa8a316498733",
+    "7faa0a9d6f8a57fa662a4b6a53724ed18ee9306f"
+  ],
+  "patch_files": {
+    "awg-device.patch": [
+      "tsnet/tsnet.go",
+      "wgengine/userspace.go",
+      "wgengine/magicsock/magicsock.go",
+      "wgengine/magicsock/derp.go",
+      "derp/derphttp/derphttp_client.go",
+      "control/controlhttp/client.go",
+      "derp/derphttp/underlay_lx.go",
+      "wgengine/wireguard_device_lx.go",
+      "wgengine/wireguard_classifier_lx.go",
+      "wgengine/magicsock/wireguard_classifier_lx.go",
+      "wgengine/magicsock/awg_framing_lx_test.go",
+      "wgengine/magicsock/force_derp_rebind_lx_test.go"
+    ],
+    "security-serve.patch": [
+      "ipn/ipnlocal/serve.go",
+      "ipn/ipnlocal/serve_security_lx.go",
+      "ipn/ipnlocal/serve_unix_linux.go",
+      "ipn/ipnlocal/serve_unix_other.go",
+      "ipn/ipnlocal/serve_security_lx_test.go"
+    ],
+    "derp-borrowed-read-ack.patch": [
+      "wgengine/magicsock/derp.go",
+      "wgengine/magicsock/derp_bind_close_ack_lx_test.go"
+    ]
+  },
+  "hotfixes": {
+    "derp-borrowed-read-ack.patch": {
+      "scope": "Minimal DERP borrowed-read acknowledgement on closed bind; no diagnostics, packet/protocol changes, timeout or queue policy.",
+      "common_seam": "Pinned Tailscale wgengine/magicsock/derp.go, connBind.receiveDERP: call dm.copyBuf(nil) once before breaking when the bind is closed; discard the stale borrowed packet.",
+      "compatibility": "Applies at the Tailscale bind lifecycle boundary to plain WG, AWG2, and AWG3 over DERP; wire format, key state, and open-bind receive handling are unchanged.",
+      "removal_condition": "Remove after a pinned SagerNet Tailscale revision includes equivalent borrowed-result acknowledgement for a closed bind and the Close/Open regression passes against that revision; recheck on every dependency bump.",
+      "regression": "wgengine/magicsock/TestDERPReceiveBindCloseReleasesBorrowedPacket (RED/GREEN and race)."
+    }
+  }
+}

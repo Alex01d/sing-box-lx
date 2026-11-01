@@ -1681,7 +1681,8 @@ func tailscaleEndpointStatusToProto(tag string, s *adapter.TailscaleEndpointStat
 		ReceivingFileCount: s.ReceivingFileCount,
 		UnreadFileCount:    s.UnreadFileCount,
 		CertDomains:        s.CertDomains,
-		Health:             s.Health, // lx: SPEC 115
+		Health:             s.Health,                                 // lx: SPEC 115
+		Transport:          tailscaleTransportToProtoLX(s.Transport), // lx: SPEC 148
 	}
 	if s.Self != nil {
 		result.Self = tailscalePeerToProto(s.Self)

@@ -33,7 +33,9 @@ func init() {
 func main() {
 	flag.Parse()
 
-	build_shared.FindMobile()
+	// lx: opt-in engineering build; the default tag/artifact set is unchanged.
+	configureEngineeringLX()
+	findMobileLX()
 
 	switch target {
 	case "android":
@@ -182,10 +184,15 @@ func getAndroidBindTarget() string {
 }
 
 func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
+	// lx: isolated engineering artifacts never replace another app's core.
+	outputName := config.OutputName
+	if engineeringOutputLX != "" {
+		outputName = filepath.Join(engineeringOutputLX, outputName)
+	}
 	args := []string{
 		"bind",
 		"-v",
-		"-o", config.OutputName,
+		"-o", outputName,
 		"-target", bindTarget,
 		"-androidapi", strconv.Itoa(config.AndroidAPI),
 		"-javapkg=io.nekohasekai",
@@ -209,6 +216,10 @@ func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
 		log.Fatal(err)
 	}
 
+	// lx: explicit output-directory builds never copy into sibling checkouts.
+	if engineeringOutputLX != "" {
+		return
+	}
 	copyPath := filepath.Join("..", "sing-box-for-android", "app", "libs")
 	if rw.IsDir(copyPath) {
 		copyPath, _ = filepath.Abs(copyPath)
@@ -232,11 +243,14 @@ func buildAndroid() {
 	if debugEnabled {
 		mainTags = append(mainTags, debugTags...)
 	}
-	buildAndroidVariant(AndroidBuildConfig{
-		AndroidAPI: 24,
-		OutputName: "libbox.aar",
-		Tags:       mainTags,
-	}, bindTarget)
+	// lx: an engineering build can select one variant; default remains both.
+	if androidVariantLX != "legacy" {
+		buildAndroidVariant(AndroidBuildConfig{
+			AndroidAPI: 24,
+			OutputName: "libbox.aar",
+			Tags:       mainTags,
+		}, bindTarget)
+	}
 
 	// Build legacy variant (SDK 21, no naive outbound)
 	legacyTags := filterTags(sharedTags, "with_naive_outbound")
@@ -244,11 +258,14 @@ func buildAndroid() {
 	if debugEnabled {
 		legacyTags = append(legacyTags, debugTags...)
 	}
-	buildAndroidVariant(AndroidBuildConfig{
-		AndroidAPI: 21,
-		OutputName: "libbox-legacy.aar",
-		Tags:       legacyTags,
-	}, bindTarget)
+	// lx: modern-only engineering builds do not compile the unused legacy AAR.
+	if androidVariantLX != "modern" {
+		buildAndroidVariant(AndroidBuildConfig{
+			AndroidAPI: 21,
+			OutputName: "libbox-legacy.aar",
+			Tags:       legacyTags,
+		}, bindTarget)
+	}
 }
 
 func buildApple() {

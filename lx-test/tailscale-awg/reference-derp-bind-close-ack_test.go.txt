@@ -1,0 +1,174 @@
+// Copyright (c) Tailscale Inc & contributors
+// SPDX-License-Identifier: BSD-3-Clause
+
+package magicsock
+
+import (
+	"net"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/LiuTangLei/wireguard-go/conn"
+	"tailscale.com/types/key"
+)
+
+// TestDERPReceiveBindCloseReleasesBorrowedPacket verifies that connBind.Close
+// cannot strand runDerpReader waiting for a copy acknowledgement when a DERP
+// result was already buffered at the time of close. It models the reader's
+// single-outstanding-packet protocol and exercises receiveDERP/Close/Open.
+func TestDERPReceiveBindCloseReleasesBorrowedPacket(t *testing.T) {
+	c := &Conn{logf: func(string, ...any) {}, derpRecvCh: make(chan derpReadResult, 1), metrics: &metrics{}}
+	cb := &connBind{Conn: c, closed: true}
+	c.bind = cb
+	// An in-memory blocking socket exercises actual bind Close/Open without UDP.
+	c.pconn4.mu.Lock()
+	c.pconn4.setConnLocked(newBlockForeverConn(), "", nil)
+	c.pconn4.mu.Unlock()
+	if _, _, err := cb.Open(0); err != nil {
+		t.Fatalf("initial Open: %v", err)
+	}
+
+	firstCopied := make(chan struct{}, 1)
+	secondCopied := make(chan struct{}, 1)
+	var firstCopyCalls, secondCopyCalls atomic.Int32
+	makeResult := func(data []byte, ack chan struct{}, calls *atomic.Int32) derpReadResult {
+		return derpReadResult{
+			regionID: 1,
+			n:        len(data),
+			src:      key.NodePublic{},
+			copyBuf: func(dst []byte) int {
+				if calls.Add(1) != 1 {
+					t.Errorf("DERP result copy callback invoked more than once")
+				}
+				n := copy(dst, data)
+				select {
+				case ack <- struct{}{}:
+				default:
+				}
+				return n
+			},
+		}
+	}
+	first := makeResult([]byte{1, 0, 0, 0}, firstCopied, &firstCopyCalls)
+	second := makeResult([]byte{2, 0, 0, 0}, secondCopied, &secondCopyCalls)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		c.derpRecvCh <- first
+		<-firstCopied
+		c.derpRecvCh <- second
+		<-secondCopied
+	}()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for len(c.derpRecvCh) == 0 {
+		select {
+		case <-deadline.C:
+			t.Fatal("DERP reader did not queue first result")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	pconnClosed := make(chan struct{}, 1)
+	go func() {
+		_, _, err := c.pconn4.ReadFromUDPAddrPort(make([]byte, 1))
+		if err != net.ErrClosed {
+			t.Errorf("forced-DERP socket read = %v, want %v", err, net.ErrClosed)
+		}
+		pconnClosed <- struct{}{}
+	}()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- cb.Close() }()
+	select {
+	case <-pconnClosed:
+	case <-deadline.C:
+		t.Fatal("connBind.Close did not close its UDP placeholder")
+	}
+
+	slab := make([]byte, 64)
+	packets := make([]conn.ReceivedPacket, 1)
+	closedReceive := make(chan error, 1)
+	go func() {
+		_, err := cb.receiveDERP(slab, packets)
+		closedReceive <- err
+	}()
+	select {
+	case err := <-closedReceive:
+		if err != net.ErrClosed {
+			t.Fatalf("receiveDERP while closed = %v, want %v", err, net.ErrClosed)
+		}
+	case <-deadline.C:
+		t.Fatal("receiveDERP did not stop after close")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("connBind.Close: %v", err)
+		}
+	case <-deadline.C:
+		t.Fatal("connBind.Close did not finish after receive stopped")
+	}
+
+	if _, _, err := cb.Open(0); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	type receiveResult struct {
+		n   int
+		err error
+	}
+	secondReceive := make(chan receiveResult, 1)
+	go func() {
+		n, err := cb.receiveDERP(slab, packets)
+		secondReceive <- receiveResult{n, err}
+	}()
+	missingAck := false
+	select {
+	case <-readerDone:
+	case <-time.After(2 * time.Second):
+		// Release the borrowed result on failure so the test never leaves a
+		// simulated DERP reader goroutine stuck behind the missing ack.
+		missingAck = true
+		first.copyBuf(nil)
+		select {
+		case <-readerDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("cleanup could not release simulated reader")
+		}
+	}
+	if slab[0] != 2 {
+		t.Fatalf("reopened receive frame starts with %d, want fresh frame 2", slab[0])
+	}
+	if err := cb.Close(); err != nil {
+		t.Fatalf("final connBind.Close: %v", err)
+	}
+	select {
+	case got := <-secondReceive:
+		if got.err != net.ErrClosed {
+			t.Fatalf("receiveDERP after final close = %v, want %v", got.err, net.ErrClosed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiveDERP did not stop after final close")
+	}
+	if got := firstCopyCalls.Load(); got != 1 {
+		t.Fatalf("first result copy count = %d, want 1", got)
+	}
+	if got := secondCopyCalls.Load(); got != 1 {
+		t.Fatalf("second result copy count = %d, want 1", got)
+	}
+	if missingAck {
+		t.Fatal("DERP reader remained blocked after bind close/reopen; queued result was not acknowledged")
+	}
+}
+
+// The synthetic Close wakeup has no borrowed buffer callback.
+func TestDERPReceiveBindCloseEmptySentinel(t *testing.T) {
+	c := &Conn{derpRecvCh: make(chan derpReadResult, 1)}
+	cb := &connBind{Conn: c, closed: true}
+	c.derpRecvCh <- derpReadResult{}
+	if n, err := cb.receiveDERP(make([]byte, 64), make([]conn.ReceivedPacket, 1)); n != 0 || err != net.ErrClosed {
+		t.Fatalf("empty closed sentinel = (%d,%v), want (0,%v)", n, err, net.ErrClosed)
+	}
+}

@@ -1,0 +1,343 @@
+diff --git a/ipn/ipnlocal/serve.go b/ipn/ipnlocal/serve.go
+index 910c2201..61de1f36 100644
+--- a/ipn/ipnlocal/serve.go
++++ b/ipn/ipnlocal/serve.go
+@@ -84,6 +84,9 @@ func init() {
+ 
+ var serveHTTPContextKey ctxkey.Key[*serveHTTPContext]
+ 
++// lx: TS-2026-017, backport d090b5ab. Mount capabilities are request-scoped.
++var appCapsContextKey = ctxkey.New("ipnlocal.appCapsContextKey", views.Slice[tailcfg.PeerCapability]{})
++
+ type serveHTTPContext struct {
+ 	SrcAddr       netip.AddrPort
+ 	ForVIPService tailcfg.ServiceName // "" means local
+@@ -91,8 +94,6 @@ type serveHTTPContext struct {
+ 
+ 	// provides funnel-specific context, nil if not funneled
+ 	Funnel *funnelFlow
+-	// AppCapabilities lists all PeerCapabilities that should be forwarded by serve
+-	AppCapabilities views.Slice[tailcfg.PeerCapability]
+ }
+ 
+ // funnelFlow represents a funneled connection initiated via IngressPeer
+@@ -675,8 +676,7 @@ func (b *LocalBackend) tcpHandlerForServeTCP(tcph ipn.TCPPortHandlerView, dport
+ 			var backConn net.Conn
+ 			var err error
+ 			if socketPath, ok := strings.CutPrefix(backDst, "unix:"); ok {
+-				var d net.Dialer
+-				backConn, err = d.DialContext(ctx, "unix", socketPath)
++				backConn, err = b.dialServeUnixSocket(ctx, socketPath)
+ 			} else {
+ 				backConn, err = b.dialer.SystemDial(ctx, "tcp", backDst)
+ 			}
+@@ -1003,8 +1003,7 @@ func (rp *reverseProxy) getTransport() *http.Transport {
+ 		dial := rp.lb.dialer.SystemDial
+ 		if rp.socketPath != "" {
+ 			dial = func(ctx context.Context, _, _ string) (net.Conn, error) {
+-				var d net.Dialer
+-				return d.DialContext(ctx, "unix", rp.socketPath)
++				return rp.lb.dialServeUnixSocket(ctx, rp.socketPath)
+ 			}
+ 		}
+ 
+@@ -1033,8 +1032,7 @@ func (rp *reverseProxy) getH2CTransport() http.RoundTripper {
+ 			Protocols: &p,
+ 			DialTLSContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+ 				if rp.socketPath != "" {
+-					var d net.Dialer
+-					return d.DialContext(ctx, "unix", rp.socketPath)
++					return rp.lb.dialServeUnixSocket(ctx, rp.socketPath)
+ 				}
+ 				return rp.lb.dialer.SystemDial(ctx, "tcp", rp.url.Host)
+ 			},
+@@ -1128,8 +1126,8 @@ func (b *LocalBackend) addAppCapabilitiesHeader(r *httputil.ProxyRequest) error
+ 	if !ok || c.Funnel != nil {
+ 		return nil
+ 	}
+-	acceptCaps := c.AppCapabilities
+-	if acceptCaps.IsNil() {
++	acceptCaps, ok := appCapsContextKey.ValueOk(r.Out.Context())
++	if !ok || acceptCaps.IsNil() {
+ 		return nil
+ 	}
+ 	peerCaps := b.PeerCaps(c.SrcAddr.Addr())
+@@ -1197,12 +1195,8 @@ func (b *LocalBackend) serveWebHandler(w http.ResponseWriter, r *http.Request) {
+ 			http.Error(w, "unknown proxy destination", http.StatusInternalServerError)
+ 			return
+ 		}
+-		// Inject app capabilities to forward into the request context
+-		c, ok := serveHTTPContextKey.ValueOk(r.Context())
+-		if !ok {
+-			return
+-		}
+-		c.AppCapabilities = h.AcceptAppCaps()
++		// lx: TS-2026-017 — never write mount state to the shared connection.
++		r = r.WithContext(appCapsContextKey.WithValue(r.Context(), h.AcceptAppCaps()))
+ 		h := p.(http.Handler)
+ 		// Trim the mount point from the URL path before proxying. (#6571)
+ 		if r.URL.Path != "/" {
+diff --git a/ipn/ipnlocal/serve_security_lx.go b/ipn/ipnlocal/serve_security_lx.go
+new file mode 100644
+--- /dev/null
++++ b/ipn/ipnlocal/serve_security_lx.go
+@@ -0,0 +1,55 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !ts_omit_serve
++
++package ipnlocal
++
++import (
++	"context"
++	"net"
++)
++
++// TS-2026-016: backport 7faa0a9d, adapted only for the SagerNet module path.
++// dialServeUnixSocket dials a unix-socket serve/funnel backend. It returns
++// ErrProxyToTailscaledSocket if the backend is tailscaled's own socket,
++// which would give the caller a root-authorized LocalAPI.
++//
++// The configured path can be replaced by anyone who can write to its
++// directory, so the socket is re-checked on every dial, not only at
++// config time. dialServeUnixSocketSafe avoids re-resolving the path
++// where the platform allows it. On the remaining dials,
++// refuseIfConnectedToTailscaledSocket re-checks the connected peer.
++func (b *LocalBackend) dialServeUnixSocket(ctx context.Context, socketPath string) (net.Conn, error) {
++	if b.isTailscaledSocket(socketPath) {
++		b.logf("serve: refusing to proxy to the tailscaled socket %q", socketPath)
++		return nil, ErrProxyToTailscaledSocket
++	}
++	conn, err := b.dialServeUnixSocketSafe(ctx, socketPath)
++	if err != nil {
++		return nil, err
++	}
++	if err := b.refuseIfConnectedToTailscaledSocket(conn); err != nil {
++		conn.Close()
++		return nil, err
++	}
++	return conn, nil
++}
++
++// refuseIfConnectedToTailscaledSocket returns ErrProxyToTailscaledSocket
++// if conn is a unix connection to the tailscaled socket. The peer address
++// is the path the listening socket was bound to, not the path that was
++// dialed, so the check still sees the tailscaled socket through a symlink
++// swapped in before the dial. This check is best-effort: connections
++// that have no determinable peer name are allowed.
++func (b *LocalBackend) refuseIfConnectedToTailscaledSocket(conn net.Conn) error {
++	ua, ok := conn.RemoteAddr().(*net.UnixAddr)
++	if !ok || ua.Name == "" {
++		return nil
++	}
++	if ua.Name == b.sys.SocketPath || b.isTailscaledSocket(ua.Name) {
++		b.logf("serve: refusing connected unix backend peer %q: it is the tailscaled socket", ua.Name)
++		return ErrProxyToTailscaledSocket
++	}
++	return nil
++}
+diff --git a/ipn/ipnlocal/serve_unix_linux.go b/ipn/ipnlocal/serve_unix_linux.go
+new file mode 100644
+--- /dev/null
++++ b/ipn/ipnlocal/serve_unix_linux.go
+@@ -0,0 +1,101 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build linux && !ts_omit_serve
++
++package ipnlocal
++
++import (
++	"context"
++	"net"
++	"path/filepath"
++	"strconv"
++
++	"golang.org/x/sys/unix"
++)
++
++// dialServeUnixSocketSafe dials socketPath. Where the platform allows
++// it, it connects to a pinned descriptor instead of the path, so that
++// swapping the path cannot retarget the connect. It returns
++// ErrProxyToTailscaledSocket if the dialed socket is tailscaled's own.
++// When no descriptor can be pinned, it dials the path directly.
++func (b *LocalBackend) dialServeUnixSocketSafe(ctx context.Context, socketPath string) (net.Conn, error) {
++	if fd, ok := pinUnixSocketPath(socketPath); ok {
++		defer unix.Close(fd)
++
++		// Check the inode held by the pin, which is the inode the
++		// connect below uses.
++		if b.isTailscaledSocketFd(fd) {
++			b.logf("serve: refusing to proxy to the tailscaled socket %q", socketPath)
++			return nil, ErrProxyToTailscaledSocket
++		}
++		conn, err := dialPinnedUnixSocket(ctx, fd)
++		if err == nil {
++			return conn, nil
++		}
++		// No usable /proc, or the pinned socket is gone. The peer is
++		// re-checked by the caller.
++		b.logf("serve: dialing %q by path: connecting through the pinned descriptor failed: %v", socketPath, err)
++	}
++	var d net.Dialer
++	return d.DialContext(ctx, "unix", socketPath)
++}
++
++// pinUnixSocketPath returns an O_PATH descriptor referring to the file
++// that socketPath resolves to, or ok=false if the kernel or the path do
++// not support it (openat2(2), Linux 5.6 and newer). The resolution never
++// follows magic links, and is restricted to the socket's parent directory
++// when possible.
++func pinUnixSocketPath(socketPath string) (fd int, ok bool) {
++	if dir, base := filepath.Split(filepath.Clean(socketPath)); dir != "" && base != "." && base != ".." && base != "/" {
++		if dirFD, err := unix.Open(dir, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); err == nil {
++			defer unix.Close(dirFD)
++			if fd, err := unix.Openat2(dirFD, base, &unix.OpenHow{
++				Flags: unix.O_PATH | unix.O_CLOEXEC,
++				Resolve: unix.RESOLVE_BENEATH |
++					unix.RESOLVE_NO_MAGICLINKS,
++			}); err == nil {
++				return fd, true
++			}
++		}
++	}
++	fd, err := unix.Openat2(unix.AT_FDCWD, socketPath, &unix.OpenHow{
++		Flags:   unix.O_PATH | unix.O_CLOEXEC,
++		Resolve: unix.RESOLVE_NO_MAGICLINKS,
++	})
++	if err != nil {
++		return -1, false
++	}
++	return fd, true
++}
++
++// dialPinnedUnixSocket connects to the unix listener referred to by the
++// O_PATH descriptor fd, via its /proc/self/fd name, so that the connect
++// uses the pinned file and not the socket path.
++func dialPinnedUnixSocket(ctx context.Context, fd int) (net.Conn, error) {
++	var d net.Dialer
++	return d.DialContext(ctx, "unix", "/proc/self/fd/"+strconv.Itoa(fd))
++}
++
++// isTailscaledSocketFd reports whether fd and the tailscaled socket
++// (b.sys.SocketPath) refer to the same file, compared by device and inode.
++// tailscaled's socket path is stat'ed on each call, so the directory holding
++// it must not be writable by the attacker for this to be meaningful.
++//
++// st_dev and st_ino are filesystem-provided, and FUSE and some network
++// filesystems can report zero or duplicate values. A match made that
++// way still refuses the dial, so such values need no special handling.
++func (b *LocalBackend) isTailscaledSocketFd(fd int) bool {
++	socketPath := b.sys.SocketPath
++	if socketPath == "" {
++		return false
++	}
++	var self, pinned unix.Stat_t
++	if err := unix.Stat(socketPath, &self); err != nil {
++		return false
++	}
++	if err := unix.Fstat(fd, &pinned); err != nil {
++		return false
++	}
++	return self.Dev == pinned.Dev && self.Ino == pinned.Ino
++}
+diff --git a/ipn/ipnlocal/serve_unix_other.go b/ipn/ipnlocal/serve_unix_other.go
+new file mode 100644
+--- /dev/null
++++ b/ipn/ipnlocal/serve_unix_other.go
+@@ -0,0 +1,19 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build !linux && !ts_omit_serve
++
++package ipnlocal
++
++import (
++	"context"
++	"net"
++)
++
++// dialServeUnixSocketSafe dials socketPath directly. This platform has no
++// openat2(2) equivalent, so swapping the path can still retarget the
++// connect. The caller re-checks the connected peer.
++func (b *LocalBackend) dialServeUnixSocketSafe(ctx context.Context, socketPath string) (net.Conn, error) {
++	var d net.Dialer
++	return d.DialContext(ctx, "unix", socketPath)
++}
+diff --git a/ipn/ipnlocal/serve_security_lx_test.go b/ipn/ipnlocal/serve_security_lx_test.go
+new file mode 100644
+--- /dev/null
++++ b/ipn/ipnlocal/serve_security_lx_test.go
+@@ -0,0 +1,69 @@
++// Copyright (c) Tailscale Inc & contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++//go:build unix && !ts_omit_serve
++
++package ipnlocal
++
++import (
++	"context"
++	"errors"
++	"net"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/sagernet/tailscale/tsd"
++)
++
++func TestServeUnixSocketSecurityBackportLX(t *testing.T) {
++	dir := t.TempDir()
++	privileged := filepath.Join(dir, "tailscaled.sock")
++	backend := filepath.Join(dir, "backend.sock")
++	p, err := net.Listen("unix", privileged)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer p.Close()
++	normal, err := net.Listen("unix", backend)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer normal.Close()
++	b := &LocalBackend{sys: &tsd.System{SocketPath: privileged}, logf: t.Logf}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	conn, err := b.dialServeUnixSocket(ctx, backend)
++	if err != nil {
++		t.Fatal(err)
++	}
++	conn.Close()
++	link := filepath.Join(dir, "alias.sock")
++	if err := os.Symlink(privileged, link); err != nil {
++		t.Fatal(err)
++	}
++	for _, path := range []string{privileged, link} {
++		conn, err := b.dialServeUnixSocket(ctx, path)
++		if conn != nil {
++			conn.Close()
++			t.Fatal("privileged socket was connected")
++		}
++		if !errors.Is(err, ErrProxyToTailscaledSocket) {
++			t.Fatalf("expected refusal for %s: %v", path, err)
++		}
++	}
++	// A backend path changed after configuration must be rechecked on dial.
++	normal.Close()
++	if err := os.Symlink(privileged, backend); err != nil {
++		t.Fatal(err)
++	}
++	conn, err = b.dialServeUnixSocket(ctx, backend)
++	if conn != nil {
++		conn.Close()
++		t.Fatal("swapped backend connected to LocalAPI")
++	}
++	if !errors.Is(err, ErrProxyToTailscaledSocket) {
++		t.Fatalf("swapped backend not refused: %v", err)
++	}
++}
