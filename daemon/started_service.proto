@@ -356,8 +356,21 @@ message TailscaleEndpointStatus {
   // Health warnings from the Tailscale backend (no DERP connection, exit node
   // offline, ...); empty when healthy. lx: SPEC 115.
   repeated string health = 16;
+  // lx: SPEC 149 — safe local transport facts, never a peer reachability verdict.
+  TailscaleTransportStatus transport = 17;
   // lx:end lx_command
 }
+
+// lx:begin tailscale_awg
+message TailscaleTransportStatus {
+  string configuredMode = 1;
+  string appliedMode = 2;
+  string profileID = 3;
+  string profileFingerprint = 4;
+  bool applied = 5;
+  string lastError = 6;
+}
+// lx:end tailscale_awg
 
 message TailscaleUserGroup {
   int64 userID = 1;

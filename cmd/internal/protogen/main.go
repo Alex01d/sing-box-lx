@@ -135,8 +135,14 @@ func main() {
 				"-I", ".",
 				"--go_out", pwd,
 				"--go_opt", "paths=source_relative",
+				// lx:begin task149-proto-empty-package
+				"--go_opt", "Mgoogle/protobuf/empty.proto=google.golang.org/protobuf/types/known/emptypb",
+				// lx:end task149-proto-empty-package
 				"--go-grpc_out", pwd,
 				"--go-grpc_opt", "paths=source_relative",
+				// lx:begin task149-proto-empty-grpc-package
+				"--go-grpc_opt", "Mgoogle/protobuf/empty.proto=google.golang.org/protobuf/types/known/emptypb",
+				// lx:end task149-proto-empty-grpc-package
 				"--plugin", "protoc-gen-go=" + filepath.Join(GOBIN, "protoc-gen-go"+suffix),
 				"--plugin", "protoc-gen-go-grpc=" + filepath.Join(GOBIN, "protoc-gen-go-grpc"+suffix),
 			}

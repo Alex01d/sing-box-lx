@@ -1,0 +1,12 @@
+--- a/wgengine/magicsock/derp.go
++++ b/wgengine/magicsock/derp.go
+@@ -716,6 +716,9 @@
+ 
+ 	for dm := range c.derpRecvCh {
+ 		if c.isClosed() {
++			if dm.copyBuf != nil {
++				dm.copyBuf(nil)
++			}
+ 			break
+ 		}
+ 		n, ep := c.processDERPReadResult(dm, slab)
